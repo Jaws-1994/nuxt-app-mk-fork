@@ -1,4 +1,4 @@
-# Nuxt Minimal Starter (Et nouveau Pierre Charlier)
+# Nuxt Minimal Starter (Et nouveau Pierre Charlier)(avec son meilleur pote Farèze)
 
 Look at the [Nuxt documentation](https://nuxt.com/docs/getting-started/introduction) to learn more.
 
