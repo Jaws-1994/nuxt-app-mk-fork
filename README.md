@@ -1,4 +1,4 @@
-# Nuxt Minimal Starter (Et nouveau Pierre)
+# Nuxt Minimal Starter (Et nouveau Pierre Charlier)
 
 Look at the [Nuxt documentation](https://nuxt.com/docs/getting-started/introduction) to learn more.
 
