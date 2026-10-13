@@ -1,4 +1,21 @@
-# Nuxt Minimal Starter
+## 🔌 API Routes (Authentification)
+
+L'API est gérée par le moteur Nitro intégré à Nuxt. Toutes les requêtes se font sous le préfixe `/api`.
+
+### 1. Inscription (Register)
+Crée un nouvel utilisateur dans la base de données.
+
+* **URL :** `/api/auth/register`
+* **Méthode :** `POST`
+* **Body (JSON) :**
+  ```json
+  {
+    "pseudo": "NomDuJoueur",
+    "mail": "joueur@email.com",
+    "password": "MotDePasseSecret"
+  }
+
+# Nuxt Minimal Starter (Et nouveau Pierre Charlier)(avec son meilleur pote Farèze)
 
 Look at the [Nuxt documentation](https://nuxt.com/docs/getting-started/introduction) to learn more.
 
@@ -73,3 +90,4 @@ bun run preview
 ```
 
 Check out the [deployment documentation](https://nuxt.com/docs/getting-started/deployment) for more information.
+
