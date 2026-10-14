@@ -26,7 +26,14 @@ NUXT_DB_PASS=votre_mot_de_passe
 NUXT_DB_NAME=movie_king_db
 \`\`\`
 
-### 4. Lancement
+### 4. Table des sessions
+Le dump fournit `users` et une table `session` (parties), mais pas les sessions d'auth. Avant le login, exécutez :
+
+```bash
+mysql -u <user> -p <nom_de_la_base> < sql/create_sessions.sql
+```
+
+### 5. Lancement
 Lancez le serveur de développement :
 \`\`\`bash
 npm run dev
@@ -38,3 +45,4 @@ Pour comprendre le fonctionnement interne du projet, veuillez consulter les fich
 * [01 - Architecture et Fichiers de Configuration](./documentation/01-architecture-et-config.md)
 * [02 - Frontend (Interface et Fichiers Publics)](./documentation/02-frontend-app-public.md)
 * [03 - Backend et Base de Données (API Nitro)](./documentation/03-backend-nitro-api.md)
+* [Documentation de l'API et du serveur](./documentation/documentation_de_l_api_et_du_serveur.md)

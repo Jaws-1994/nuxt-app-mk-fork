@@ -8,13 +8,18 @@ Ce document décrit l'architecture du backend de l'application, géré par le mo
 
 ```text
 mon-projet/
+├── sql/
+│   └── create_sessions.sql
 └── server/
     ├── api/
     │   └── auth/
     │       ├── login.post.js
+    │       ├── logout.post.js
+    │       ├── me.get.js
     │       └── register.post.js
     └── utils/
-        └── db.js
+        ├── db.js
+        └── session.js
 ```
 
 ### 📁 `server/`
@@ -36,11 +41,17 @@ Ce fichier gère la connexion à la base de données MySQL.
 - **Sécurité :** Il récupère les identifiants de connexion de manière sécurisée via `useRuntimeConfig()`, qui lit les variables d'environnement depuis le fichier `.env` à la racine du projet.
 - **Utilisation :** N'importe où dans le dossier API, on peut exécuter une requête SQL en appelant `pool.query()`.
 
+### 📄 `session.js` (`server/utils/session.js`)
+Gère les sessions révocables.
+- **Cookie `mk_session` :** identifiant aléatoire, `HttpOnly`, `Path=/`, `SameSite=Lax`, `Secure` en production.
+- **Base :** table `auth_sessions` (`session_token_hash`, `ID_user`, `session_expires_at`). Distincte de `session` (parties). Le dump n'a pas cette table : exécuter `sql/create_sessions.sql`. `ID_user` est `INT UNSIGNED`.
+- **Fonctions :** `createSession`, `getSessionUser`, `destroySession`, `toPublicUser` (jamais le hash du mot de passe).
+
 ---
 
 ## 🔌 Routes API d'Authentification (📁 `server/api/auth/`)
 
-Ces fichiers gèrent l'inscription et la connexion des utilisateurs. L'extension `.post.js` indique à Nuxt que ces routes n'acceptent que les requêtes HTTP de type `POST`. Les mots de passe sont hachés et vérifiés à l'aide de la librairie `bcrypt`.
+Ces fichiers gèrent l'inscription, la connexion, le profil courant et la déconnexion. L'extension (`.post.js`, `.get.js`) indique la méthode HTTP acceptée. Les mots de passe sont hachés et vérifiés avec `bcrypt`. Les sessions sont stockées en base (hash du jeton, pas le jeton en clair).
 
 ### 📄 `register.post.js`
 Gère la création d'un nouveau compte joueur.
@@ -77,10 +88,54 @@ Gère la connexion d'un compte joueur existant.
   }
   ```
 - **Processus :**
-  1. Cherche dans la base de données l'utilisateur correspondant à l'adresse `mail`.
-  2. Si l'utilisateur est trouvé, compare le `password` envoyé en clair avec le `user_password_hash` stocké en base via `bcrypt.compare`.
-  3. Retourne les informations publiques du joueur (id, pseudo, rôle, score) pour l'utiliser côté front-end (sans renvoyer le hash du mot de passe).
+  1. Lit `mail` et `password`. Renvoie 400 s'ils manquent.
+  2. Charge uniquement les colonnes nécessaires (`ID_user`, champs publics, `user_password_hash`) — pas de `SELECT *`.
+  3. Vérifie le mot de passe avec `bcrypt.compare` (sans logger le mot de passe ni le hash).
+  4. Crée une ligne dans `auth_sessions` (hash du jeton + `ID_user` + expiration) et pose le cookie HttpOnly `mk_session`.
+  5. Renvoie le profil public (`id`, `pseudo`, `role`, `score`). Le hash du mot de passe n'est jamais renvoyé.
 - **Réponses :**
-  - `200 OK` : Connexion réussie, renvoie les données du profil.
+  - `200 OK` : Connexion réussie, cookie de session + profil public.
   - `400 Bad Request` : Email ou mot de passe manquant.
-  - `401 Unauthorized` : Identifiants incorrects (email introuvable ou mauvais mot de passe).
+  - `401 Unauthorized` : Identifiants incorrects.
+
+---
+
+### 📄 `me.get.js`
+Renvoie le profil de l'utilisateur actuellement authentifié.
+
+- **URL :** `GET /api/auth/me`
+- **Body :** aucun. Le cookie `mk_session` suffit.
+- **Processus :**
+  1. Lit le cookie, calcule son SHA-256, joint `auth_sessions` et `users`.
+  2. Ignore les sessions expirées (`session_expires_at > NOW()`).
+  3. Renvoie le profil public (dont le pseudo). Aucune modification des colonnes `users` n'est nécessaire pour afficher le pseudo.
+- **Réponses :**
+  - `200 OK` : `{ "success": true, "user": { "id", "pseudo", "role", "score" } }`.
+  - `401 Unauthorized` : cookie absent, session inconnue ou expirée.
+
+---
+
+### 📄 `logout.post.js`
+Invalide la session côté serveur et supprime le cookie.
+
+- **URL :** `POST /api/auth/logout`
+- **Processus :**
+  1. Supprime la ligne correspondant au hash du jeton dans `auth_sessions` (révocation immédiate).
+  2. Efface le cookie `mk_session` (`Path=/`).
+- **Réponses :**
+  - `200 OK` : déconnexion réussie (idempotent si aucune session n'existait).
+
+---
+
+## 🧪 Tester les routes avec Insomnium
+
+Base URL : `http://localhost:3000` (après `npm run dev`). Utiliser le même hôte pour toutes les requêtes, afin que le cookie jar conserve `mk_session`.
+
+1. **Prérequis :** exécuter `sql/create_sessions.sql` sur la base, puis avoir un compte (`POST /api/auth/register` si besoin).
+2. **Login** — `POST http://localhost:3000/api/auth/login`  
+   Header `Content-Type: application/json`, body JSON `{ "mail": "...", "password": "..." }`.  
+   Succès : `200` avec `user.pseudo`. Dans l’onglet **Cookies** / timeline : cookie `mk_session`, attributs `HttpOnly` et `Path=/`. Le JSON ne contient pas `user_password_hash`.
+3. **Me** — `GET http://localhost:3000/api/auth/me` (pas de body). Insomnium renvoie le cookie tout seul si le jar est actif. Succès : même profil public. Sans cookie ou après expiration : `401`.
+4. **Logout** — `POST http://localhost:3000/api/auth/logout`. Vérifier que le cookie est retiré, puis refaire `GET /api/auth/me` → `401`.
+
+Ne pas envoyer de header `Authorization` : l’auth repose uniquement sur le cookie. Pour un test « non connecté », vider le cookie jar ou ouvrir une requête dans un autre espace sans cookies.

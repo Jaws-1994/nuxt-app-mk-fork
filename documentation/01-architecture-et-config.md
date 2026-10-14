@@ -9,6 +9,7 @@ L'application suit la structure de dossiers standardisée par **Nuxt 3**. Ce doc
 ├── documentation/        # Documentations techniques pour l'équipe
 ├── public/               # Fichiers statiques accessibles publiquement
 ├── server/               # Cœur du Backend (API Nitro, Utilitaires Serveur MySQL)
+├── sql/                  # Scripts SQL hors dump (ex. table auth_sessions)
 ├── .gitignore            # Règles d'exclusion pour Git
 ├── nuxt.config.ts        # Fichier de configuration principal de Nuxt
 ├── package.json          # Liste des dépendances et scripts

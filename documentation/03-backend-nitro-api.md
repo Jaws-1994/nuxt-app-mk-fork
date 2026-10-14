@@ -11,8 +11,15 @@ Ce fichier gère la connexion à notre base de données MySQL.
 > 💡 **Magie de Nuxt (Auto-imports) :**
 > Le dossier `server/utils/` est spécial. Toutes les fonctions exportées dans ce dossier sont automatiquement disponibles partout dans l'API. Vous pouvez donc faire un `await pool.query(...)` dans n'importe quelle route sans jamais faire de `import { pool } from '../utils/db.js'`.
 
+## 🪪 Sessions révocables (`/server/utils/session.js` + table `auth_sessions`)
+Le dump contient `users` et une table `session` (parties / quiz), mais **pas** de table d'auth. Exécuter `sql/create_sessions.sql` avant le login. `ID_user` y est `INT UNSIGNED`, comme dans `users`.
+
+* **Modèle :** le cookie `mk_session` contient un identifiant aléatoire (32 octets, base64url). Seule son empreinte SHA-256 est stockée dans `auth_sessions`, avec `ID_user` et `session_expires_at` (7 jours). Révoquer une session = supprimer la ligne : le cookie devient immédiatement inutilisable.
+* **Cookie :** `HttpOnly`, `Path=/`, `SameSite=Lax` (front et API sur le même origine Nuxt). `Secure` est activé uniquement en production (`NODE_ENV=production`, donc HTTPS). Jamais de hash de mot de passe dans le cookie ni dans les réponses JSON.
+* **Helpers auto-importés :** `createSession`, `getSessionUser`, `destroySession`, `toPublicUser`.
+
 ## 🔐 Routes API d'Authentification (`/server/api/auth/`)
-Nuxt crée automatiquement des routes HTTP en lisant les fichiers du dossier `server/api`. L'extension `.post.js` force la route à n'accepter que les requêtes **POST**.
+Nuxt crée automatiquement des routes HTTP en lisant les fichiers du dossier `server/api`. L'extension `.post.js` / `.get.js` force la méthode HTTP acceptée.
 
 ### 1. Inscription : `register.post.js`
 * **Route :** `POST /api/auth/register`
@@ -26,10 +33,22 @@ Nuxt crée automatiquement des routes HTTP en lisant les fichiers du dossier `se
 
 ### 2. Connexion : `login.post.js`
 * **Route :** `POST /api/auth/login`
-* **Objectif :** Authentifier un utilisateur et renvoyer ses données de session.
+* **Objectif :** Vérifier les identifiants, créer une session révocable, poser le cookie HttpOnly, renvoyer le profil public (dont le pseudo).
 * **Fonctionnement détaillé :**
   1. Extrait `mail` et `password` de la requête. Renvoie 400 si absents.
-  2. **Recherche SQL :** Fait un `SELECT * FROM users WHERE user_mail = ?`. S'il n'y a pas de résultat, renvoie une erreur 401 (Email introuvable).
-  3. **Vérification :** Utilise `bcrypt.compare()` pour vérifier si le mot de passe fourni correspond au `user_password_hash` stocké en base. Si faux, renvoie 401 (Mot de passe incorrect).
-  4. **Succès :** Si tout est bon, l'API renvoie un objet `user` nettoyé contenant l'ID, le pseudo, le rôle et le score. 
-  * 🔒 *Règle d'or : On ne renvoie jamais le mot de passe haché au frontend.*
+  2. **Recherche SQL :** sélectionne uniquement `ID_user`, `user_pseudo`, `user_role`, `user_score` et `user_password_hash` (pas de `SELECT *`).
+  3. **Vérification :** `bcrypt.compare()` sur le hash. Identifiants inconnus ou mot de passe faux → 401 identique (`Identifiants incorrects`). Aucun log du mot de passe ni du hash.
+  4. **Session :** génère un identifiant aléatoire, enregistre son hash + `ID_user` + expiration, pose le cookie `mk_session`.
+  5. **Succès :** objet `user` public (id, pseudo, rôle, score). Le hash du mot de passe n'est jamais renvoyé.
+
+### 3. Profil courant : `me.get.js`
+* **Route :** `GET /api/auth/me`
+* **Objectif :** Lire le cookie, retrouver la session non expirée, renvoyer le profil public.
+* **Réponses :** `200` avec `{ success, user }` ; `401` si cookie absent, session inconnue ou expirée.
+
+### 4. Déconnexion : `logout.post.js`
+* **Route :** `POST /api/auth/logout`
+* **Objectif :** Supprimer la ligne de session en base (révocation immédiate) et effacer le cookie (`Path=/`).
+* **Réponse :** `200` même si aucune session n'était présente (idempotent).
+
+🔒 *Règle d'or : on ne renvoie jamais `user_password_hash` au navigateur.*
