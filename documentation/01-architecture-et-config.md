@@ -9,6 +9,7 @@ L'application suit la structure de dossiers standardisée par **Nuxt 3**. Ce doc
 ├── documentation/        # Documentations techniques pour l'équipe
 ├── public/               # Fichiers statiques accessibles publiquement
 ├── server/               # Cœur du Backend (API Nitro, Utilitaires Serveur MySQL)
+├── sql/                  # Scripts SQL hors dump (ex. table auth_sessions)
 ├── .gitignore            # Règles d'exclusion pour Git
 ├── nuxt.config.ts        # Fichier de configuration principal de Nuxt
 ├── package.json          # Liste des dépendances et scripts
@@ -21,7 +22,7 @@ L'application suit la structure de dossiers standardisée par **Nuxt 3**. Ce doc
 
 ### `nuxt.config.ts`
 C'est le chef d'orchestre de l'application Nuxt. C'est ici que l'on configure :
-* **runtimeConfig** : Permet d'injecter des variables d'environnement (comme les accès BDD) de manière sécurisée. Les variables définies ici sont accessibles côté serveur via `useRuntimeConfig()`.
+* **runtimeConfig** : Injecte les variables serveur (`DB_*`, `JWT_SECRET`, `CORS_ORIGINS`) via `useRuntimeConfig()`. Elles ne sont pas exposées au navigateur.
 * **Modules** : C'est ici que l'on ajoute Pinia, Tailwind CSS, etc.
 * **Méta-données globales** : Titre du site, balises `<head>`, scripts externes.
 
