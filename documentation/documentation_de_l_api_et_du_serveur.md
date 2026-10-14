@@ -17,6 +17,8 @@ mon-projet/
     │       ├── logout.post.js
     │       ├── me.get.js
     │       └── register.post.js
+    ├── middleware/
+    │   └── cors.js
     └── utils/
         ├── db.js
         └── session.js
@@ -42,16 +44,19 @@ Ce fichier gère la connexion à la base de données MySQL.
 - **Utilisation :** N'importe où dans le dossier API, on peut exécuter une requête SQL en appelant `pool.query()`.
 
 ### 📄 `session.js` (`server/utils/session.js`)
-Gère les sessions révocables.
-- **Cookie `mk_session` :** identifiant aléatoire, `HttpOnly`, `Path=/`, `SameSite=Lax`, `Secure` en production.
-- **Base :** table `auth_sessions` (`session_token_hash`, `ID_user`, `session_expires_at`). Distincte de `session` (parties). Le dump n'a pas cette table : exécuter `sql/create_sessions.sql`. `ID_user` est `INT UNSIGNED`.
-- **Fonctions :** `createSession`, `getSessionUser`, `destroySession`, `toPublicUser` (jamais le hash du mot de passe).
+Gère les JWT révocables (plus de cookie de session).
+- **JWT :** HS256, 7 jours, claims `sub` (ID utilisateur) et `jti`. Envoyé dans `Authorization: Bearer <token>`.
+- **Base :** table `auth_sessions` (hash SHA-256 du `jti`, `ID_user`, `session_expires_at`). Distincte de `session` (parties). Exécuter `sql/create_sessions.sql`. `ID_user` est `INT UNSIGNED`.
+- **Fonctions :** `createSession` (renvoie le JWT), `getSessionUser`, `destroySession`, `toPublicUser` (jamais le hash du mot de passe).
+
+### 📄 `cors.js` (`server/middleware/cors.js`)
+Autorise le front `https://app-user-mk-paq6.vercel.app` à appeler l'API `https://nuxt-app-mk.vercel.app`. Origines lues dans `CORS_ORIGINS`. Headers autorisés : `Content-Type`, `Authorization`. Prévol `OPTIONS` → 204.
 
 ---
 
 ## 🔌 Routes API d'Authentification (📁 `server/api/auth/`)
 
-Ces fichiers gèrent l'inscription, la connexion, le profil courant et la déconnexion. L'extension (`.post.js`, `.get.js`) indique la méthode HTTP acceptée. Les mots de passe sont hachés et vérifiés avec `bcrypt`. Les sessions sont stockées en base (hash du jeton, pas le jeton en clair).
+Ces fichiers gèrent l'inscription, la connexion, le profil courant et la déconnexion. L'extension (`.post.js`, `.get.js`) indique la méthode HTTP acceptée. Les mots de passe sont hachés et vérifiés avec `bcrypt`. L'auth utilise un JWT ; le `jti` est hashé en base pour pouvoir révoquer immédiatement.
 
 ### 📄 `register.post.js`
 Gère la création d'un nouveau compte joueur.
@@ -91,10 +96,10 @@ Gère la connexion d'un compte joueur existant.
   1. Lit `mail` et `password`. Renvoie 400 s'ils manquent.
   2. Charge uniquement les colonnes nécessaires (`ID_user`, champs publics, `user_password_hash`) — pas de `SELECT *`.
   3. Vérifie le mot de passe avec `bcrypt.compare` (sans logger le mot de passe ni le hash).
-  4. Crée une ligne dans `auth_sessions` (hash du jeton + `ID_user` + expiration) et pose le cookie HttpOnly `mk_session`.
-  5. Renvoie le profil public (`id`, `pseudo`, `role`, `score`). Le hash du mot de passe n'est jamais renvoyé.
+  4. Crée une ligne dans `auth_sessions` (hash du `jti` + `ID_user` + expiration) et signe un JWT.
+  5. Renvoie `{ token, user }` (`id`, `pseudo`, `role`, `score`). Le hash du mot de passe n'est jamais renvoyé.
 - **Réponses :**
-  - `200 OK` : Connexion réussie, cookie de session + profil public.
+  - `200 OK` : Connexion réussie, JWT + profil public.
   - `400 Bad Request` : Email ou mot de passe manquant.
   - `401 Unauthorized` : Identifiants incorrects.
 
@@ -104,24 +109,24 @@ Gère la connexion d'un compte joueur existant.
 Renvoie le profil de l'utilisateur actuellement authentifié.
 
 - **URL :** `GET /api/auth/me`
-- **Body :** aucun. Le cookie `mk_session` suffit.
+- **Body :** aucun. Header `Authorization: Bearer <jwt>`.
 - **Processus :**
-  1. Lit le cookie, calcule son SHA-256, joint `auth_sessions` et `users`.
-  2. Ignore les sessions expirées (`session_expires_at > NOW()`).
+  1. Vérifie le JWT, hash le `jti`, joint `auth_sessions` et `users`.
+  2. Ignore les sessions expirées ou révoquées (`session_expires_at > NOW()`).
   3. Renvoie le profil public (dont le pseudo). Aucune modification des colonnes `users` n'est nécessaire pour afficher le pseudo.
 - **Réponses :**
   - `200 OK` : `{ "success": true, "user": { "id", "pseudo", "role", "score" } }`.
-  - `401 Unauthorized` : cookie absent, session inconnue ou expirée.
+  - `401 Unauthorized` : header absent, JWT invalide, session inconnue ou expirée.
 
 ---
 
 ### 📄 `logout.post.js`
-Invalide la session côté serveur et supprime le cookie.
+Invalide la session côté serveur. Le client doit oublier le JWT.
 
 - **URL :** `POST /api/auth/logout`
+- **Header :** `Authorization: Bearer <jwt>`
 - **Processus :**
-  1. Supprime la ligne correspondant au hash du jeton dans `auth_sessions` (révocation immédiate).
-  2. Efface le cookie `mk_session` (`Path=/`).
+  1. Vérifie le JWT et supprime la ligne correspondant au hash du `jti` dans `auth_sessions` (révocation immédiate).
 - **Réponses :**
   - `200 OK` : déconnexion réussie (idempotent si aucune session n'existait).
 
@@ -129,13 +134,13 @@ Invalide la session côté serveur et supprime le cookie.
 
 ## 🧪 Tester les routes avec Insomnium
 
-Base URL : `http://localhost:3000` (après `npm run dev`). Utiliser le même hôte pour toutes les requêtes, afin que le cookie jar conserve `mk_session`.
+Base URL locale : `http://localhost:3000`. Production API : `https://nuxt-app-mk.vercel.app`.
 
-1. **Prérequis :** exécuter `sql/create_sessions.sql` sur la base, puis avoir un compte (`POST /api/auth/register` si besoin).
-2. **Login** — `POST http://localhost:3000/api/auth/login`  
-   Header `Content-Type: application/json`, body JSON `{ "mail": "...", "password": "..." }`.  
-   Succès : `200` avec `user.pseudo`. Dans l’onglet **Cookies** / timeline : cookie `mk_session`, attributs `HttpOnly` et `Path=/`. Le JSON ne contient pas `user_password_hash`.
-3. **Me** — `GET http://localhost:3000/api/auth/me` (pas de body). Insomnium renvoie le cookie tout seul si le jar est actif. Succès : même profil public. Sans cookie ou après expiration : `401`.
-4. **Logout** — `POST http://localhost:3000/api/auth/logout`. Vérifier que le cookie est retiré, puis refaire `GET /api/auth/me` → `401`.
+1. **Prérequis :** table `auth_sessions` + `JWT_SECRET` dans `.env` (et dans Vercel pour l'API).
+2. **Login** — `POST /api/auth/login`  
+   Header `Content-Type: application/json`, body `{ "mail": "...", "password": "..." }`.  
+   Succès : `200` avec `token` et `user.pseudo`. Copier `token`. Pas de cookie, pas de `user_password_hash`.
+3. **Me** — `GET /api/auth/me`, onglet Auth → Bearer Token, coller le JWT (Insomnium enverra `Authorization: Bearer ...`). Succès : profil. Sans header / mauvais token / après logout : `401`.
+4. **Logout** — `POST /api/auth/logout` avec le même Bearer, puis `GET /me` → `401`.
 
-Ne pas envoyer de header `Authorization` : l’auth repose uniquement sur le cookie. Pour un test « non connecté », vider le cookie jar ou ouvrir une requête dans un autre espace sans cookies.
+Côté front : stocker `token` (ex. `localStorage`) et l'envoyer sur chaque requête API. Ne pas utiliser `credentials: 'include'` pour l'auth.

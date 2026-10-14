@@ -27,10 +27,11 @@ export default defineEventHandler(async (event) => {
       throw createError({ statusCode: 401, statusMessage: 'Identifiants incorrects' });
     }
 
-    await createSession(event, user.ID_user);
+    const token = await createSession(user.ID_user);
 
     return {
       success: true,
+      token,
       user: toPublicUser(user)
     };
   } catch (error) {

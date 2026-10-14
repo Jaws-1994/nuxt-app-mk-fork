@@ -1,24 +1,30 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { SignJWT, jwtVerify } from 'jose';
 
-export const SESSION_COOKIE_NAME = 'mk_session';
 export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 jours
 
-function hashSessionToken(token) {
-  return createHash('sha256').update(token).digest('hex');
+function hashJti(jti) {
+  return createHash('sha256').update(jti).digest('hex');
 }
 
-function getSessionCookieOptions() {
-  const isProd = process.env.NODE_ENV === 'production';
+function getJwtSecretKey() {
+  const secret = useRuntimeConfig().jwtSecret;
+  if (!secret) {
+    throw createError({
+      statusCode: 500,
+      statusMessage: 'JWT_SECRET manquant'
+    });
+  }
+  return new TextEncoder().encode(secret);
+}
 
-  return {
-    httpOnly: true,
-    secure: isProd,
-    // Same-origin (front + API Nuxt) : Lax. En local HTTP, None exigerait Secure.
-    // Si l'API est un jour servi depuis un autre domaine en HTTPS, passer à 'none'.
-    sameSite: 'lax',
-    path: '/',
-    maxAge: SESSION_TTL_SECONDS
-  };
+function getBearerToken(event) {
+  const header = getHeader(event, 'authorization') || '';
+  const [scheme, token] = header.split(' ');
+  if (scheme !== 'Bearer' || !token) {
+    return null;
+  }
+  return token;
 }
 
 export function toPublicUser(row) {
@@ -30,22 +36,9 @@ export function toPublicUser(row) {
   };
 }
 
-export function setSessionCookie(event, token) {
-  setCookie(event, SESSION_COOKIE_NAME, token, getSessionCookieOptions());
-}
-
-export function clearSessionCookie(event) {
-  deleteCookie(event, SESSION_COOKIE_NAME, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    path: '/'
-  });
-}
-
-export async function createSession(event, userId) {
-  const token = randomBytes(32).toString('base64url');
-  const tokenHash = hashSessionToken(token);
+export async function createSession(userId) {
+  const jti = randomBytes(32).toString('base64url');
+  const tokenHash = hashJti(jti);
   const expiresAt = new Date(Date.now() + SESSION_TTL_SECONDS * 1000);
 
   await pool.query(
@@ -53,23 +46,49 @@ export async function createSession(event, userId) {
     [tokenHash, userId, expiresAt]
   );
 
-  setSessionCookie(event, token);
+  return new SignJWT({})
+    .setProtectedHeader({ alg: 'HS256' })
+    .setSubject(String(userId))
+    .setJti(jti)
+    .setIssuedAt()
+    .setExpirationTime(`${SESSION_TTL_SECONDS}s`)
+    .sign(getJwtSecretKey());
 }
 
-export async function getSessionUser(event) {
-  const token = getCookie(event, SESSION_COOKIE_NAME);
+async function readJwt(event) {
+  const token = getBearerToken(event);
   if (!token) {
     return null;
   }
 
-  const tokenHash = hashSessionToken(token);
+  try {
+    const { payload } = await jwtVerify(token, getJwtSecretKey(), {
+      algorithms: ['HS256']
+    });
+    if (!payload.jti || !payload.sub) {
+      return null;
+    }
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+export async function getSessionUser(event) {
+  const payload = await readJwt(event);
+  if (!payload) {
+    return null;
+  }
+
+  const tokenHash = hashJti(payload.jti);
   const [rows] = await pool.query(
     `SELECT u.ID_user, u.user_pseudo, u.user_role, u.user_score
      FROM auth_sessions s
      INNER JOIN users u ON u.ID_user = s.ID_user
      WHERE s.session_token_hash = ?
+       AND s.ID_user = ?
        AND s.session_expires_at > NOW()`,
-    [tokenHash]
+    [tokenHash, payload.sub]
   );
 
   if (rows.length === 0) {
@@ -80,12 +99,12 @@ export async function getSessionUser(event) {
 }
 
 export async function destroySession(event) {
-  const token = getCookie(event, SESSION_COOKIE_NAME);
-
-  if (token) {
-    const tokenHash = hashSessionToken(token);
-    await pool.query('DELETE FROM auth_sessions WHERE session_token_hash = ?', [tokenHash]);
+  const payload = await readJwt(event);
+  if (!payload) {
+    return;
   }
 
-  clearSessionCookie(event);
+  await pool.query('DELETE FROM auth_sessions WHERE session_token_hash = ?', [
+    hashJti(payload.jti)
+  ]);
 }
