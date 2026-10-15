@@ -8,13 +8,20 @@ Ce document décrit l'architecture du backend de l'application, géré par le mo
 
 ```text
 mon-projet/
+├── sql/
+│   └── create_sessions.sql
 └── server/
     ├── api/
     │   └── auth/
     │       ├── login.post.js
+    │       ├── logout.post.js
+    │       ├── me.get.js
     │       └── register.post.js
+    ├── middleware/
+    │   └── cors.js
     └── utils/
-        └── db.js
+        ├── db.js
+        └── session.js
 ```
 
 ### 📁 `server/`
@@ -36,11 +43,20 @@ Ce fichier gère la connexion à la base de données MySQL.
 - **Sécurité :** Il récupère les identifiants de connexion de manière sécurisée via `useRuntimeConfig()`, qui lit les variables d'environnement depuis le fichier `.env` à la racine du projet.
 - **Utilisation :** N'importe où dans le dossier API, on peut exécuter une requête SQL en appelant `pool.query()`.
 
+### 📄 `session.js` (`server/utils/session.js`)
+Gère les JWT révocables (plus de cookie de session).
+- **JWT :** HS256, 7 jours, claims `sub` (ID utilisateur) et `jti`. Envoyé dans `Authorization: Bearer <token>`.
+- **Base :** table `auth_sessions` (hash SHA-256 du `jti`, `ID_user`, `session_expires_at`). Distincte de `session` (parties). Exécuter `sql/create_sessions.sql`. `ID_user` est `INT UNSIGNED`.
+- **Fonctions :** `createSession` (renvoie le JWT), `getSessionUser`, `destroySession`, `toPublicUser` (jamais le hash du mot de passe).
+
+### 📄 `cors.js` (`server/middleware/cors.js`)
+Autorise le front `https://app-user-mk-paq6.vercel.app` à appeler l'API `https://nuxt-app-mk.vercel.app`. Origines lues dans `CORS_ORIGINS`. Headers autorisés : `Content-Type`, `Authorization`. Prévol `OPTIONS` → 204.
+
 ---
 
 ## 🔌 Routes API d'Authentification (📁 `server/api/auth/`)
 
-Ces fichiers gèrent l'inscription et la connexion des utilisateurs. L'extension `.post.js` indique à Nuxt que ces routes n'acceptent que les requêtes HTTP de type `POST`. Les mots de passe sont hachés et vérifiés à l'aide de la librairie `bcrypt`.
+Ces fichiers gèrent l'inscription, la connexion, le profil courant et la déconnexion. L'extension (`.post.js`, `.get.js`) indique la méthode HTTP acceptée. Les mots de passe sont hachés et vérifiés avec `bcrypt`. L'auth utilise un JWT ; le `jti` est hashé en base pour pouvoir révoquer immédiatement.
 
 ### 📄 `register.post.js`
 Gère la création d'un nouveau compte joueur.
@@ -77,10 +93,54 @@ Gère la connexion d'un compte joueur existant.
   }
   ```
 - **Processus :**
-  1. Cherche dans la base de données l'utilisateur correspondant à l'adresse `mail`.
-  2. Si l'utilisateur est trouvé, compare le `password` envoyé en clair avec le `user_password_hash` stocké en base via `bcrypt.compare`.
-  3. Retourne les informations publiques du joueur (id, pseudo, rôle, score) pour l'utiliser côté front-end (sans renvoyer le hash du mot de passe).
+  1. Lit `mail` et `password`. Renvoie 400 s'ils manquent.
+  2. Charge uniquement les colonnes nécessaires (`ID_user`, champs publics, `user_password_hash`) — pas de `SELECT *`.
+  3. Vérifie le mot de passe avec `bcrypt.compare` (sans logger le mot de passe ni le hash).
+  4. Crée une ligne dans `auth_sessions` (hash du `jti` + `ID_user` + expiration) et signe un JWT.
+  5. Renvoie `{ token, user }` (`id`, `pseudo`, `role`, `score`). Le hash du mot de passe n'est jamais renvoyé.
 - **Réponses :**
-  - `200 OK` : Connexion réussie, renvoie les données du profil.
+  - `200 OK` : Connexion réussie, JWT + profil public.
   - `400 Bad Request` : Email ou mot de passe manquant.
-  - `401 Unauthorized` : Identifiants incorrects (email introuvable ou mauvais mot de passe).
+  - `401 Unauthorized` : Identifiants incorrects.
+
+---
+
+### 📄 `me.get.js`
+Renvoie le profil de l'utilisateur actuellement authentifié.
+
+- **URL :** `GET /api/auth/me`
+- **Body :** aucun. Header `Authorization: Bearer <jwt>`.
+- **Processus :**
+  1. Vérifie le JWT, hash le `jti`, joint `auth_sessions` et `users`.
+  2. Ignore les sessions expirées ou révoquées (`session_expires_at > NOW()`).
+  3. Renvoie le profil public (dont le pseudo). Aucune modification des colonnes `users` n'est nécessaire pour afficher le pseudo.
+- **Réponses :**
+  - `200 OK` : `{ "success": true, "user": { "id", "pseudo", "role", "score" } }`.
+  - `401 Unauthorized` : header absent, JWT invalide, session inconnue ou expirée.
+
+---
+
+### 📄 `logout.post.js`
+Invalide la session côté serveur. Le client doit oublier le JWT.
+
+- **URL :** `POST /api/auth/logout`
+- **Header :** `Authorization: Bearer <jwt>`
+- **Processus :**
+  1. Vérifie le JWT et supprime la ligne correspondant au hash du `jti` dans `auth_sessions` (révocation immédiate).
+- **Réponses :**
+  - `200 OK` : déconnexion réussie (idempotent si aucune session n'existait).
+
+---
+
+## 🧪 Tester les routes avec Insomnium
+
+Base URL locale : `http://localhost:3000`. Production API : `https://nuxt-app-mk.vercel.app`.
+
+1. **Prérequis :** table `auth_sessions` + `JWT_SECRET` dans `.env` (et dans Vercel pour l'API).
+2. **Login** — `POST /api/auth/login`  
+   Header `Content-Type: application/json`, body `{ "mail": "...", "password": "..." }`.  
+   Succès : `200` avec `token` et `user.pseudo`. Copier `token`. Pas de cookie, pas de `user_password_hash`.
+3. **Me** — `GET /api/auth/me`, onglet Auth → Bearer Token, coller le JWT (Insomnium enverra `Authorization: Bearer ...`). Succès : profil. Sans header / mauvais token / après logout : `401`.
+4. **Logout** — `POST /api/auth/logout` avec le même Bearer, puis `GET /me` → `401`.
+
+Côté front : stocker `token` (ex. `localStorage`) et l'envoyer sur chaque requête API. Ne pas utiliser `credentials: 'include'` pour l'auth.
